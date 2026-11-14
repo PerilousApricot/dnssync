@@ -29,6 +29,9 @@ dnssync zone.example.com -s 127.0.0.1 -p 5353
 - `-k, --key`: TSIG key name for authentication
 - `--key-secret`: TSIG key secret (or use DNS_TSIG_SECRET env var)
 - `--dry-run`: Show what updates would be made without sending them
+- `--mark-managed`: Add external-dns compatible heritage TXT records to mark managed records (default: True)
+- `--no-mark-managed`: Disable marking managed records with TXT records
+- `--owner-id`: Owner ID for managed records (used in external-dns compatible TXT format, default: "default")
 
 ## How It Works
 

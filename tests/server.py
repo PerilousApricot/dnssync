@@ -8,61 +8,120 @@ import dns.message
 import dns.rcode
 import dns.rrset
 import sys
-
-PORT = 15353
-ZONE_NAME = "example.com."
-
-# Create zone from zone file
-with open("/etc/bind/db.example.com", "r") as f:
-    zone_text = f.read()
-
-zone = dns.zone.from_text(zone_text, origin=dns.name.from_text(ZONE_NAME))
-print(f"Zone loaded with {len(list(zone.iterate_rdatas()))} records")
+import dns.rdataclass
 
 
-def handle_request(sock, data, addr):
-    try:
-        msg = dns.message.from_wire(data)
-        if isinstance(msg, dns.update.Update):
-            # RFC 2136 update
-            zone.apply(msg.update)
-            resp = msg.response()
-            resp.rcode = dns.rcode.NOERROR
-            return resp.to_wire()
-        else:
-            # Standard query
-            resp = msg.response()
-            if msg.question:
-                qname = msg.question[0].qname
-                qtype = msg.question[0].qtype
+class TestDNSServer:
+    """Simple in-memory DNS test server for integration testing."""
+
+    def __init__(self, host="127.0.0.1", port=15353, zone_name="example.com."):
+        self.host = host
+        self.port = port
+        self.zone_name = zone_name
+
+        # Create an empty zone
+        zone_text = f"$ORIGIN {zone_name}\n$TTL 3600\n@ IN SOA ns1 admin 1 3600 900 604800 300\n@ IN NS ns1"
+        self.zone = dns.zone.from_text(zone_text, origin=dns.name.from_text(zone_name))
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((host, port))
+        print(f"DNS server listening on {host}:{port}")
+
+    def handle_update(self, msg):
+        """Process RFC 2136 update operations."""
+        for op in msg.update:
+            print(f"  [server] Operation: {op.name} {op.rdtype} deleting={op.deleting}")
+            if op.deleting == dns.rdatatype.ANY:
+                # Delete all records of this type for this name
                 try:
-                    rdataset = zone.get_rdataset(qname, qtype)
-                    for rdata in rdataset:
-                        rr = dns.rr.RR(qname, qtype, 0, rdataset.ttl, rdata)
-                        resp.answer.append(rr)
-                except (dns.zone.NoRRset, KeyError):
-                    pass
-            return resp.to_wire()
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+                    node = self.zone.nodes[op.name]
+                    rdatasets = [r for r in node.rdatasets() if r.rdtype == op.rdtype]
+                    for r in rdatasets:
+                        node.remove_rdataset(r)
+                    print(f"  [server] Deleted all {op.rdtype} for {op.name}")
+                except KeyError:
+                    print(f"  [server] No node for {op.name}")
+            elif op.deleting is not None:
+                # Delete specific records
+                try:
+                    node = self.zone.nodes[op.name]
+                    rdataset = node.get_rdataset(dns.rdataclass.IN, op.rdtype)
+                    if rdataset is not None:
+                        for rdata in op:
+                            rdataset.discard(rdata)
+                        print(f"  [server] Deleted specific {op.rdtype} for {op.name}")
+                except KeyError:
+                    print(f"  [server] No rdataset for {op.name} {op.rdtype}")
+            else:
+                # Add records
+                try:
+                    node = self.zone.nodes[op.name]
+                except KeyError:
+                    node = self.zone.node_factory()
+                    self.zone.nodes[op.name] = node
+                    print(f"  [server] Created node for {op.name}")
+                try:
+                    rdataset = node.get_rdataset(dns.rdataclass.IN, op.rdtype)
+                    if rdataset is None:
+                        rdataset = dns.rrset.RRset(
+                            op.name, dns.rdataclass.IN, op.rdtype
+                        )
+                        rdataset.ttl = op.ttl
+                        node.add_rdataset(rdataset)
+                        print(f"  [server] Created rdataset for {op.name} {op.rdtype}")
+                    for rdata in op:
+                        rdataset.add(rdata)
+                    print(f"  [server] Added records for {op.name} {op.rdtype}")
+                except Exception as e:
+                    print(f"  [server] Error adding: {e}")
+
+    def handle_request(self, data, addr):
         try:
-            # Send a basic error response
-            resp = dns.message.make_response(msg)
-            resp.rcode = dns.rcode.SERVFAIL
-            return resp.to_wire()
-        except:
-            return None
+            msg = dns.message.from_wire(data)
+            if msg.opcode() == dns.opcode.UPDATE:
+                print(f"  [server] Update from {addr}")
+                self.handle_update(msg)
+                resp = dns.message.make_response(msg)
+                resp.rcode = dns.rcode.NOERROR
+                return resp.to_wire()
+            else:
+                print(f"  [server] Query from {addr}: {msg.question}")
+                resp = dns.message.make_response(msg)
+                if msg.question:
+                    qname = msg.question[0].qname
+                    qtype = msg.question[0].qtype
+                    try:
+                        node = self.zone.nodes[qname]
+                        for rdataset in node.rdatasets():
+                            if rdataset.rdtype == qtype:
+                                resp.answer.append(rdataset)
+                                print(f"  [server] Found {qname} {qtype}")
+                    except KeyError:
+                        print(f"  [server] No node for {qname}")
+                return resp.to_wire()
+        except Exception as e:
+            print(f"  [server] Error: {e}", file=sys.stderr)
+            try:
+                resp = dns.message.make_response(dns.message.from_wire(data))
+                resp.rcode = dns.rcode.SERVFAIL
+                return resp.to_wire()
+            except Exception:
+                return None
 
+    def run(self):
+        while True:
+            try:
+                data, addr = self.sock.recvfrom(4096)
+                resp = self.handle_request(data, addr)
+                if resp:
+                    self.sock.sendto(resp, addr)
+            except Exception as e:
+                print(f"  [server] Error: {e}", file=sys.stderr)
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("0.0.0.0", PORT))
-print(f"DNS server listening on 0.0.0.0:{PORT}")
+    def start(self):
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
 
-while True:
-    try:
-        data, addr = sock.recvfrom(4096)
-        resp = handle_request(sock, data, addr)
-        if resp:
-            sock.sendto(resp, addr)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+    def stop(self):
+        self.sock.close()

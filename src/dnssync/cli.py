@@ -52,8 +52,28 @@ def main():
         action="store_true",
         help="Show updates without sending them",
     )
+    parser.add_argument(
+        "--mark-managed",
+        action="store_true",
+        default=True,
+        help="Add 'heritage=external-dns' TXT records to mark managed records (default: True)",
+    )
+    parser.add_argument(
+        "--no-mark-managed",
+        action="store_true",
+        help="Disable marking managed records with TXT records",
+    )
+    parser.add_argument(
+        "--owner-id",
+        default="",
+        help="Owner ID for managed records (used in external-dns compatible TXT format)",
+    )
 
     args = parser.parse_args()
+
+    # Resolve mark_managed flag
+    if args.no_mark_managed:
+        args.mark_managed = False
 
     if not args.zone:
         # Infer zone name from zonefile filename
@@ -77,7 +97,14 @@ def main():
 
         print(f"\nSending updates to {args.server}:{args.port}...")
         result = apply_updates(
-            args.server, args.port, args.zone, records, args.key, args.key_secret
+            args.server,
+            args.port,
+            args.zone,
+            records,
+            args.key,
+            args.key_secret,
+            args.mark_managed,
+            args.owner_id,
         )
 
         print(

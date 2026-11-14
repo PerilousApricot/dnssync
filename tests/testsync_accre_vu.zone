@@ -1,0 +1,14 @@
+$ORIGIN testsync.accre.vu.
+$TTL 300
+@       IN  SOA ns1.testsync.accre.vu. admin.testsync.accre.vu. (
+                    2024102101  ; serial
+                    3600       ; refresh
+                    900        ; retry
+                    604800     ; expire
+                    300 )      ; minimum
+@       IN  NS  ns1.testsync.accre.vu.
+@       IN  NS  ns2.testsync.accre.vu.
+@       IN  A   10.0.0.1
+www     IN  A   10.0.0.1
+api     IN  A   10.0.0.2
+mail    IN  A   10.0.0.3

@@ -1,11 +1,18 @@
-"""Integration tests: parse zone, build updates, reconcile with server state."""
+"""Integration tests: parse zone, build updates, send to server.
 
-import dns.zone
-import dns.update
+Tests the RFC 2136 update mechanism without requiring a real DNS server.
+"""
+
+import os
+import sys
+import dns.message
+import dns.query
 import dns.rdatatype
-import dns.name
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
+
 from dnssync.parser import parse_zone_file
-from dnssync.updater import build_update, apply_updates
+from dnssync.updater import build_update
 
 
 def test_basic_update():
@@ -41,15 +48,12 @@ def test_record_removal():
     assert len(wire) > 0, "Update wire data is empty"
 
     # Verify the update contains delete operations for www
-    # by parsing the wire back
     msg = dns.message.from_wire(wire)
     has_www_delete = any(
         str(op.name) == "www.example.com." and op.deleting is not None
         for op in msg.update
     )
     print(f"  Has www delete operation: {has_www_delete}")
-    # Note: Our build_update uses replace semantics (delete all + add new)
-    # so we expect a delete+add for each name/type, not just delete
     print("  [PASS]")
 
 
@@ -73,12 +77,6 @@ def test_update_existing_record():
 
     # Verify the new value is in the update
     msg = dns.message.from_wire(wire)
-    print("  Update operations:")
-    for op in msg.update:
-        print(f"    {op.name} {op.rdtype} deleting={op.deleting}")
-        if not op.deleting and len(op) > 0:
-            for rdata in op:
-                print(f"      {rdata}")
     has_new_value = any(
         str(op.name) == "www.example.com."
         and op.deleting is None

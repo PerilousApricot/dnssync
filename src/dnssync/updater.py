@@ -1,6 +1,7 @@
 """RFC 2136 DNS dynamic update sender with full zone reconciliation."""
 
 import socket
+import time
 from collections import defaultdict
 import dns.update
 import dns.tsig
@@ -14,9 +15,12 @@ from .models import DNSRecord
 
 
 def get_server_records(server: str, port: int, zone: str) -> List[DNSRecord]:
-    """Query the server for all current records in the zone via AXFR."""
+    """Query the server for all current records in the zone via AXFR.
+
+    Falls back to returning empty list if AXFR is not available.
+    """
     try:
-        response = dns.query.xfr(server, zone, port=port)
+        response = dns.query.xfr(server, zone, port=port, timeout=5)
         records = []
         for rdataset in response:
             for rdata in rdataset:
@@ -29,15 +33,27 @@ def get_server_records(server: str, port: int, zone: str) -> List[DNSRecord]:
                     )
                 )
         return records
-    except Exception:
+    except dns.exception.Timeout:
+        print(f"    Warning: AXFR timed out, assuming empty zone")
+        return []
+    except Exception as e:
+        print(f"    Warning: AXFR failed ({e}), assuming empty zone")
         return []
 
 
-def build_update(zone: str, records: List[DNSRecord]) -> dns.update.Update:
+def build_update(
+    zone: str, records: List[DNSRecord], mark_managed: bool = True, owner_id: str = ""
+) -> dns.update.Update:
     """Build an RFC 2136 update message without sending it.
 
     Groups records by (name, type) so that replace() sends the complete set.
     Records removed from the zone file will be deleted from the server.
+
+    Args:
+        zone: Zone name
+        records: List of DNS records to add
+        mark_managed: If True, add heritage TXT records to track managed records
+        owner_id: Owner ID for the heritage record (external-dns compatible format)
 
     Used for dry-run mode to preview changes.
     """
@@ -57,6 +73,11 @@ def build_update(zone: str, records: List[DNSRecord]) -> dns.update.Update:
         # Add the new complete set
         for record in group:
             update.add(name, record.ttl, rtype, record.data)
+        if mark_managed:
+            # Add external-dns compatible heritage record
+            owner = owner_id if owner_id else "default"
+            heritage = f"heritage=external-dns,external-dns/owner={owner}"
+            update.add(name, 3600, dns.rdatatype.TXT, heritage)
 
     return update
 
@@ -68,11 +89,23 @@ def reconcile_zone(
     zone_records: List[DNSRecord],
     tsig_key: str = "",
     tsig_secret: str = "",
+    mark_managed: bool = True,
+    owner_id: str = "",
 ) -> Dict[str, object]:
     """Reconcile the server zone with the zone file.
 
     Full reconciliation: queries the server for all current records,
     compares with the zone file, and sends updates to make them match.
+
+    Args:
+        server: DNS server address
+        port: DNS server port
+        zone: Zone name
+        zone_records: Records from the zone file
+        tsig_key: TSIG key name for authentication
+        tsig_secret: TSIG key secret
+        mark_managed: If True, add heritage TXT records to track managed records
+        owner_id: Owner ID for the heritage record (external-dns compatible format)
     """
     # Get current server state
     server_records = get_server_records(server, port, zone)
@@ -83,7 +116,12 @@ def reconcile_zone(
         return (r.name, r.type, r.data)
 
     zone_set = {record_key(r) for r in zone_records if r.type != "SOA"}
-    server_set = {record_key(r) for r in server_records}
+    # Filter out external-dns heritage records from server set
+    server_set = {
+        record_key(r)
+        for r in server_records
+        if not (r.type == "TXT" and r.data.startswith("heritage=external-dns"))
+    }
 
     to_add = zone_set - server_set
     to_delete = server_set - zone_set
@@ -113,22 +151,27 @@ def reconcile_zone(
         update.delete(name, rtype)
         for record in group:
             update.add(name, record.ttl, rtype, record.data)
+        if mark_managed:
+            # Add external-dns compatible heritage record
+            owner = owner_id if owner_id else "default"
+            heritage = f"heritage=external-dns,external-dns/owner={owner}"
+            update.add(name, 3600, dns.rdatatype.TXT, heritage)
 
     # Add TSIG auth
     if tsig_key:
+        import base64
+
+        # Ensure secret is base64-encoded
+        try:
+            base64.b64decode(tsig_secret)
+        except Exception:
+            tsig_secret = base64.b64encode(tsig_secret.encode()).decode()
         key = dns.tsig.Key(tsig_key, tsig_secret, dns.tsig.HMAC_SHA256)
-        update.use_tsig(key, keyring={key.name: key})
+        update.use_tsig(key)
 
-    # Send update
+    # Send update via RFC 2136
     try:
-        wire = update.to_wire()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.sendto(wire, (server, port))
-        sock.settimeout(5)
-        response_wire, _ = sock.recvfrom(4096)
-        sock.close()
-
-        response = dns.message.from_wire(response_wire)
+        response = dns.query.udp(update, server, port=port, timeout=5)
         if response.rcode() == dns.rcode.NOERROR:
             return {"added": len(to_add), "removed": len(to_delete), "errors": 0}
         else:
@@ -136,8 +179,10 @@ def reconcile_zone(
                 "added": 0,
                 "removed": 0,
                 "errors": 1,
-                "message": f"Server returned rcode {response.rcode()}",
+                "message": f"Server returned rcode {dns.rcode.to_text(response.rcode())}",
             }
+    except dns.exception.Timeout:
+        return {"added": 0, "removed": 0, "errors": 1, "message": "Update timed out"}
     except Exception as e:
         return {"added": 0, "removed": 0, "errors": 1, "message": str(e)}
 
@@ -149,10 +194,24 @@ def apply_updates(
     records: List[DNSRecord],
     tsig_key: str = "",
     tsig_secret: str = "",
+    mark_managed: bool = True,
+    owner_id: str = "",
 ) -> Dict[str, object]:
     """Apply all updates for records to the DNS server.
 
     Full zone reconciliation: records in the zone file are added/updated,
     and records on the server that are not in the zone file are deleted.
+
+    Args:
+        server: DNS server address
+        port: DNS server port
+        zone: Zone name
+        records: Records from the zone file
+        tsig_key: TSIG key name for authentication
+        tsig_secret: TSIG key secret
+        mark_managed: If True, add heritage TXT records to track managed records
+        owner_id: Owner ID for the heritage record (external-dns compatible format)
     """
-    return reconcile_zone(server, port, zone, records, tsig_key, tsig_secret)
+    return reconcile_zone(
+        server, port, zone, records, tsig_key, tsig_secret, mark_managed, owner_id
+    )
