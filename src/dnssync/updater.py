@@ -20,18 +20,24 @@ def get_server_records(server: str, port: int, zone: str) -> List[DNSRecord]:
     Falls back to returning empty list if AXFR is not available.
     """
     try:
-        response = dns.query.xfr(server, zone, port=port, timeout=5)
+        # relativize=False so returned names are absolute, matching the
+        # absolute names the zone-file parser produces (otherwise the
+        # reconciliation name sets never line up and stale records are missed).
+        response = dns.query.xfr(server, zone, port=port, timeout=5, relativize=False)
         records = []
-        for rdataset in response:
-            for rdata in rdataset:
-                records.append(
-                    DNSRecord(
-                        name=str(rdataset.name),
-                        type=dns.rdatatype.to_text(rdataset.rdtype),
-                        data=str(rdata),
-                        ttl=rdataset.ttl,
+        # dns.query.xfr yields Message objects; the transferred RRsets are in
+        # each message's answer section (SOA at first and last).
+        for message in response:
+            for rdataset in message.answer:
+                for rdata in rdataset:
+                    records.append(
+                        DNSRecord(
+                            name=str(rdataset.name),
+                            type=dns.rdatatype.to_text(rdataset.rdtype),
+                            data=str(rdata),
+                            ttl=rdataset.ttl,
+                        )
                     )
-                )
         return records
     except dns.exception.Timeout:
         print(f"    Warning: AXFR timed out, assuming empty zone")
@@ -116,17 +122,31 @@ def reconcile_zone(
         return (r.name, r.type, r.data)
 
     zone_set = {record_key(r) for r in zone_records if r.type != "SOA"}
-    # Filter out external-dns heritage records from server set
-    server_set = {
-        record_key(r)
-        for r in server_records
-        if not (r.type == "TXT" and r.data.startswith("heritage=external-dns"))
-    }
+    # The server set must be built consistently with zone_set: exclude SOA
+    # (dnssync does not manage the SOA -- deleting it would break subsequent
+    # AXFR transfers, which require a leading SOA RRset) and exclude our own
+    # heritage TXT markers. TXT rdata serializes with surrounding quotes, so
+    # strip them before the heritage prefix check.
+    server_set = set()
+    for r in server_records:
+        if r.type == "SOA":
+            continue
+        if r.type == "TXT" and r.data.strip('"').startswith("heritage=external-dns"):
+            continue
+        server_set.add(record_key(r))
 
     to_add = zone_set - server_set
     to_delete = server_set - zone_set
 
-    if not to_add and not to_delete:
+    # Names present on the server but entirely absent from the zone file must
+    # be wiped for ALL types (including their heritage TXT marker), otherwise
+    # an orphaned TXT record is left behind when its parent record is removed.
+    zone_names = {r.name for r in zone_records if r.type != "SOA"}
+    fully_stale_names = {
+        r.name for r in server_records if r.name not in zone_names
+    }
+
+    if not to_add and not to_delete and not fully_stale_names:
         print("    Zone is already in sync")
         return {"added": 0, "removed": 0, "errors": 0}
 
@@ -135,9 +155,14 @@ def reconcile_zone(
     # Build update
     update = dns.update.Update(zone)
 
-    # Delete stale records
+    # Wipe names that are no longer in the zone file at all (all types)
+    for name in fully_stale_names:
+        update.delete(name)
+
+    # Delete stale records for names that are still in the zone file
     for name, rtype, data in to_delete:
-        update.delete(name, rtype)
+        if name not in fully_stale_names:
+            update.delete(name, rtype)
 
     # Add/update zone file records
     groups = defaultdict(list)
