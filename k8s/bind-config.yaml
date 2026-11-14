@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bind-config
+  namespace: dnssync-test
+  labels:
+    app.kubernetes.io/part-of: dnssync
+data:
+  # named.conf -- listens on all interfaces (53/UDP+TCP), TSIG-gated dynamic
+  # updates, and allows unsigned AXFR (DNSSync's get_server_records does an
+  # unauthenticated zone transfer).
+  named.conf: |
+    options {
+        directory "/var/lib/bind";
+        listen-on port 53 { any; };
+        listen-on-v6 { none; };
+        allow-query { any; };
+        allow-recursion { none; };
+        dnssec-validation no;
+        version "dnssync-test";
+        dump-file "/var/lib/bind/named_dump.db";
+        statistics-file "/var/lib/bind/named.stats";
+    };
+
+    key dnssync-test-key. {
+        algorithm hmac-sha256;
+        secret "5EbpuFt9x1qtAUPmR+lyHY0NQiTcqtAMECILX1MqYRw=";
+    };
+
+    zone "testsync.accre.vu" IN {
+        type master;
+        file "/var/lib/bind/db.testsync.accre.vu";
+        allow-update { key dnssync-test-key.; };
+        allow-transfer { any; };
+    };
+
+  # Master zone: SOA + NS + glue. BIND requires in-zone NS targets (ns1, ns2)
+  # to have A/AAAA records, or the zone fails to load -- so the glue must be
+  # present in the baseline. The matching glue is also in the zone file DNSSync
+  # syncs (tests/k8s/zone-k8s.zone), so reconciliation treats it as managed
+  # rather than stale. The initContainer copies this into a writable emptyDir
+  # on every Pod start, so each test run begins from this clean baseline.
+  db.testsync.accre.vu: |
+    $TTL 3600
+    @   IN SOA ns1.testsync.accre.vu. admin.testsync.accre.vu. (
+                2024102101 ; serial
+                3600       ; refresh
+                900        ; retry
+                604800     ; expire
+                300 )      ; minimum
+    @   IN NS ns1.testsync.accre.vu.
+    @   IN NS ns2.testsync.accre.vu.
+    ns1 IN A 10.0.0.10
+    ns2 IN A 10.0.0.11

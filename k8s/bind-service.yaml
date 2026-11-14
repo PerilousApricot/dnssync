@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: bind
+  namespace: dnssync-test
+  labels:
+    app: bind
+    app.kubernetes.io/part-of: dnssync
+spec:
+  # ClusterIP only -- the DNSSync test client runs in-cluster and reaches this
+  # service by name (bind.dnssync-test.svc:53). The VM's IPs are not routable
+  # from the macOS host, so no NodePort/LoadBalancer is needed.
+  selector:
+    app: bind
+  ports:
+    - { name: dns-udp, port: 53, protocol: UDP }
+    - { name: dns-tcp, port: 53, protocol: TCP }

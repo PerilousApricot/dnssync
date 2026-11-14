@@ -1,0 +1,15 @@
+FROM debian:bookworm-slim
+
+# bind9      = the DNS server (named)
+# bind9utils = named-checkconf / named-checkzone
+# bind9-dnsutils = dig / host / nslookup (used by the readiness probe)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bind9 bind9utils bind9-dnsutils \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/bind /var/cache/bind \
+    && chown -R bind:bind /var/lib/bind /var/cache/bind
+
+# Writable zone dir + config are provided at runtime (emptyDir + ConfigMap).
+EXPOSE 53/udp 53/tcp
+CMD ["named", "-c", "/etc/dnssync/named.conf", "-g"]

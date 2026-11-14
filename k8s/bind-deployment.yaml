@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bind
+  namespace: dnssync-test
+  labels:
+    app: bind
+    app.kubernetes.io/part-of: dnssync
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # single-replica DNS server; avoid two named on one zone
+  selector:
+    matchLabels:
+      app: bind
+  template:
+    metadata:
+      labels:
+        app: bind
+    spec:
+      # Copy the zone from the (read-only) ConfigMap into a writable emptyDir.
+      # This lets named apply RFC 2136 updates + write its journal, and gives
+      # every Pod start a clean baseline zone (SOA + NS only).
+      initContainers:
+        - name: init-zone
+          image: dnssync-bind9:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - cp /etc/dnssync/db.testsync.accre.vu /var/lib/bind/db.testsync.accre.vu
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dnssync
+            - name: zone-data
+              mountPath: /var/lib/bind
+      containers:
+        - name: named
+          image: dnssync-bind9:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 53, protocol: UDP, name: dns-udp }
+            - { containerPort: 53, protocol: TCP, name: dns-tcp }
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dnssync
+            - name: zone-data
+              mountPath: /var/lib/bind
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - dig @127.0.0.1 +short +time=2 +tries=1 testsync.accre.vu. SOA | grep -q .
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - dig @127.0.0.1 +short +time=2 +tries=1 testsync.accre.vu. SOA | grep -q .
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: bind-config
+        - name: zone-data
+          emptyDir: {}
