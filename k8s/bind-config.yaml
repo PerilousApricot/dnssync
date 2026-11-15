@@ -11,15 +11,15 @@ data:
   # unauthenticated zone transfer).
   named.conf: |
     options {
-        directory "/var/lib/bind";
+        directory "/var/cache/bind";
         listen-on port 53 { any; };
         listen-on-v6 { none; };
         allow-query { any; };
         allow-recursion { none; };
         dnssec-validation no;
         version "dnssync-test";
-        dump-file "/var/lib/bind/named_dump.db";
-        statistics-file "/var/lib/bind/named.stats";
+        dump-file "/var/cache/bind/named_dump.db";
+        statistics-file "/var/cache/bind/named.stats";
     };
 
     key dnssync-test-key. {
@@ -29,7 +29,7 @@ data:
 
     zone "testsync.accre.vu" IN {
         type master;
-        file "/var/lib/bind/db.testsync.accre.vu";
+        file "/var/cache/bind/db.testsync.accre.vu";
         allow-update { key dnssync-test-key.; };
         allow-transfer { any; };
     };

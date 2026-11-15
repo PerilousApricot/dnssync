@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Deploy the DNSSync test BIND server to the local Kubernetes cluster.
 #
-#   ./deploy.sh          # build image (if needed) + apply + wait ready
+# Uses the public internetsystemsconsortium/bind9 image (pulled from Docker
+# Hub by the node) -- no local image build required.
+#
+#   ./deploy.sh          # apply + wait ready
 #   ./deploy.sh down     # tear everything down
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -15,20 +18,13 @@ if [ "${1:-up}" = "down" ]; then
   exit 0
 fi
 
-# 1. Build the image into k3s's containerd namespace if it isn't there yet.
-if ! nerdctl --namespace k8s.io images 2>/dev/null | grep -q dnssync-bind9; then
-  ./build-bind.sh
-else
-  echo ">> dnssync-bind9 image already present in k8s.io namespace."
-fi
-
-# 2. Apply manifests.
+# 1. Apply manifests. The bind9 image is pulled from Docker Hub on demand.
 kubectl apply -f namespace.yaml
 kubectl apply -f bind-config.yaml
 kubectl apply -f bind-deployment.yaml
 kubectl apply -f bind-service.yaml
 
-# 3. Force a clean Pod start (fresh baseline zone) and wait for readiness.
+# 2. Force a clean Pod start (fresh baseline zone) and wait for readiness.
 echo ">> Restarting bind Pod for a clean zone baseline ..."
 kubectl -n "${NS}" delete pod -l app=bind --ignore-not-found --wait=false || true
 kubectl -n "${NS}" rollout status deployment/bind --timeout=240s

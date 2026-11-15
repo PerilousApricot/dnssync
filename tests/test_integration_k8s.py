@@ -2,8 +2,9 @@
 
 This is the "real BIND" layer of the test suite. It orchestrates, from the host:
 
-  1. ensures the BIND server (``k8s/``) is built + deployed in the local cluster
-     (building the arm64 debian+bind9 image via nerdctl if it is not present),
+  1. ensures the BIND server (``k8s/``) is deployed in the local cluster -- it
+     uses the public ``internetsystemsconsortium/bind9`` image, which the node
+     pulls from Docker Hub (no local image build),
   2. restarts the BIND Pod so the zone starts from a clean baseline,
   3. generates a ConfigMap from the *current* ``src/dnssync`` source (so the
      test always exercises the live code) plus the runner and zone fixture,
@@ -31,7 +32,7 @@ import pytest
 NS = "dnssync-test"
 BIND_SVC = "bind.dnssync-test.svc"
 ZONE = "testsync.accre.vu."
-BIND_IMG = "dnssync-bind9:latest"
+BIND_IMG = "internetsystemsconsortium/bind9:9.18"
 RUNNER_IMG = "python:3"
 JOB_NAME = "dnssync-test"
 FILES_CM = "dnssync-test-files"
@@ -79,36 +80,14 @@ def read_tsig_from_named_conf():
     return m.group(1), m.group(2)
 
 
-def image_in_k3s():
-    if not shutil.which("nerdctl"):
-        return False
-    r = subprocess.run(
-        ["nerdctl", "--namespace", "k8s.io", "images"],
-        capture_output=True, text=True,
-    )
-    return BIND_IMG.split(":")[0] in r.stdout
-
-
-def build_bind_image():
-    build = os.path.join(K8S_DIR, "build-bind.sh")
-    r = subprocess.run(["bash", build], capture_output=True, text=True, timeout=600)
-    if r.returncode != 0:
-        raise RuntimeError(f"build-bind.sh failed:\n{r.stdout}\n{r.stderr}")
-    print("  built", BIND_IMG, "into k3s containerd (k8s.io namespace)")
-
-
 def ensure_bind_deployed():
-    # 1. image present (build if needed)
-    if not image_in_k3s():
-        if not shutil.which("nerdctl"):
-            pytest.skip("nerdctl not available to build the BIND image")
-        build_bind_image()
-    # 2. apply manifests
+    # 1. apply manifests -- the bind9 image is pulled from Docker Hub by the
+    #    node on first use (imagePullPolicy: IfNotPresent reuses the cache).
     for mf in ["namespace.yaml", "bind-config.yaml", "bind-deployment.yaml", "bind-service.yaml"]:
         kubectl("apply", "-f", os.path.join(K8S_DIR, mf))
-    # 3. restart the Pod for a clean zone baseline
+    # 2. restart the Pod for a clean zone baseline
     kubectl("-n", NS, "delete", "pod", "-l", "app=bind", "--ignore-not-found", "--wait=false", check=False)
-    # 4. wait for rollout / readiness
+    # 3. wait for rollout / readiness
     r = kubectl("-n", NS, "rollout", "status", "deployment/bind", "--timeout=240s", check=False)
     if r.returncode != 0:
         pods = kubectl("-n", NS, "get", "pods", "-l", "app=bind", check=False).stdout

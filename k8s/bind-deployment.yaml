@@ -18,34 +18,48 @@ spec:
       labels:
         app: bind
     spec:
-      # Copy the zone from the (read-only) ConfigMap into a writable emptyDir.
-      # This lets named apply RFC 2136 updates + write its journal, and gives
-      # every Pod start a clean baseline zone (SOA + NS only).
+      # Uses the public internetsystemsconsortium/bind9 image (no local build).
+      # Its entrypoint runs named as the unprivileged "bind" user (uid/gid 53):
+      #   named -u bind -f -c /etc/bind/named.conf -L /var/log/bind/default.log
+      # named needs a writable zone directory for RFC 2136 update journals, so
+      # the zone is copied from the (read-only) ConfigMap into a writable
+      # emptyDir at /var/cache/bind (the image's default "directory").
+      # fsGroup 53 makes that emptyDir group-writable by the bind user.
+      # Every Pod start re-copies the zone, so each test run begins from a
+      # clean baseline.
+      securityContext:
+        fsGroup: 53
       initContainers:
         - name: init-zone
-          image: dnssync-bind9:latest
+          image: internetsystemsconsortium/bind9:9.18
           imagePullPolicy: IfNotPresent
           command:
             - sh
             - -c
-            - cp /etc/dnssync/db.testsync.accre.vu /var/lib/bind/db.testsync.accre.vu
+            - cp /config/db.testsync.accre.vu /var/cache/bind/db.testsync.accre.vu && chown bind:bind /var/cache/bind/db.testsync.accre.vu && chmod 640 /var/cache/bind/db.testsync.accre.vu
           volumeMounts:
             - name: config
-              mountPath: /etc/dnssync
+              mountPath: /config
+              readOnly: true
             - name: zone-data
-              mountPath: /var/lib/bind
+              mountPath: /var/cache/bind
       containers:
         - name: named
-          image: dnssync-bind9:latest
+          image: internetsystemsconsortium/bind9:9.18
           imagePullPolicy: IfNotPresent
+          # No command override: the image entrypoint already runs named in the
+          # foreground (-f) as the bind user, reading /etc/bind/named.conf.
           ports:
             - { containerPort: 53, protocol: UDP, name: dns-udp }
             - { containerPort: 53, protocol: TCP, name: dns-tcp }
           volumeMounts:
+            # Mount just our named.conf over the image's default config file.
             - name: config
-              mountPath: /etc/dnssync
+              mountPath: /etc/bind/named.conf
+              subPath: named.conf
+              readOnly: true
             - name: zone-data
-              mountPath: /var/lib/bind
+              mountPath: /var/cache/bind
           readinessProbe:
             exec:
               command:

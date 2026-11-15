@@ -250,12 +250,12 @@ pytest tests/test_e2e.py
 ### K8s test BIND server
 
 A standalone, real BIND 9 server is provided under `k8s/` for local-cluster
-testing (built with `nerdctl` into the `k8s.io` containerd namespace that
-k3s/Rancher reads):
+testing. It uses the public `internetsystemsconsortium/bind9:9.18` image, which
+the node pulls from Docker Hub (no local image build):
 
 ```bash
 cd k8s
-./deploy.sh          # builds the image if missing, deploys, restarts for a clean baseline
+./deploy.sh          # deploys (image pulled from Docker Hub), restarts for a clean baseline
 ./deploy.sh down     # tears down the dnssync-test namespace
 ```
 
@@ -288,5 +288,5 @@ tests/
   test_integration_k8s.py# real-BIND-on-K8s integration test
   k8s/runner.py          # in-cluster scenario runner
   k8s/zone-k8s.zone      # K8s zone fixture
-k8s/                   # standalone real-BIND test server (manifests + build)
+k8s/                   # standalone real-BIND test server (k8s manifests)
 ```
