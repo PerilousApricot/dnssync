@@ -290,3 +290,31 @@ tests/
   k8s/zone-k8s.zone      # K8s zone fixture
 k8s/                   # standalone real-BIND test server (k8s manifests)
 ```
+
+## Releasing
+
+Versioning is handled by [tbump](https://github.com/MarcoGorelli/tbump). It is
+part of the `dev` extra and reads its config from `[tool.tbump]` in
+`pyproject.toml`.
+
+To cut a release:
+
+```bash
+pip install -e ".[dev]"
+
+# Preview the changes
+tbump --dry-run 0.2.0
+
+# Apply: bumps the version in pyproject.toml and src/dnssync/__init__.py,
+# commits the change, creates tag v0.2.0 and pushes
+tbump 0.2.0
+```
+
+Once the tag is pushed, create a GitHub release from it (e.g. in the GitHub
+UI or `gh release create v0.2.0`). Publishing the release triggers
+`.github/workflows/publish.yml`, which builds the sdist and wheel and uploads
+them to PyPI.
+
+The workflow authenticates with the `PYPI_API_TOKEN` repository secret — a
+PyPI API token (https://pypi.org/manage/account/token/) with access to the
+`dnssync` project. Without it, the publish job fails.

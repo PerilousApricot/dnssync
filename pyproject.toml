@@ -16,6 +16,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "black>=22.0",
+    "tbump>=6.0",
 ]
 
 [project.scripts]
@@ -27,3 +28,27 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.tbump]
+
+[tool.tbump.version]
+current = "0.1.0"
+regex = '''
+  (?:
+    (?P<major>0|[1-9]\d*) \.
+    (?P<minor>0|[1-9]\d*) \.
+    (?P<patch>0|[1-9]\d*)
+  )
+'''
+
+[tool.tbump.git]
+message_template = "Bump version to {new_version}"
+tag_template = "v{new_version}"
+
+[[tool.tbump.file]]
+src = "pyproject.toml"
+search = 'version = "{current_version}"'
+
+[[tool.tbump.file]]
+src = "src/dnssync/__init__.py"
+search = '__version__ = "{current_version}"'
