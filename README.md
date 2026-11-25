@@ -310,10 +310,9 @@ tbump --dry-run 0.2.0
 tbump 0.2.0
 ```
 
-Once the tag is pushed, create a GitHub release from it (e.g. in the GitHub
-UI or `gh release create v0.2.0`). Publishing the release triggers
-`.github/workflows/publish.yml`, which builds the sdist and wheel and uploads
-them to PyPI.
+Once the tag is pushed, `.github/workflows/publish.yml` runs
+automatically: it builds the sdist and wheel, creates the GitHub release
+from the tag, and uploads the distributions to PyPI.
 
 The workflow authenticates with the `PYPI_API_TOKEN` repository secret — a
 PyPI API token (https://pypi.org/manage/account/token/) with access to the
