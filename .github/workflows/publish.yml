@@ -3,7 +3,7 @@ name: Release & publish to PyPI
 on:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*"
 
 permissions:
   contents: write
